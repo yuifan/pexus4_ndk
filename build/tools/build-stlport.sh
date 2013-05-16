@@ -20,10 +20,7 @@
 
 # include common function and variable definitions
 . `dirname $0`/prebuilt-common.sh
-
-# Location of the  test project we use to force the rebuild.
-# This is relative to the current NDK directory.
-PROJECT_SUBDIR=tests/build/prebuild-stlport
+. `dirname $0`/builder-funcs.sh
 
 PROGRAM_PARAMETERS=""
 
@@ -31,26 +28,27 @@ PROGRAM_DESCRIPTION=\
 "Rebuild the prebuilt STLport binaries for the Android NDK.
 
 This script is called when packaging a new NDK release. It will simply
-rebuild the STLport static and shared libraries from sources by using
-the dummy project under $PROJECT_SUBDIR and a valid NDK installation.
+rebuild the STLport static and shared libraries from sources.
+
+This requires a temporary NDK installation containing platforms and
+toolchain binaries for all target architectures.
 
 By default, this will try with the current NDK directory, unless
 you use the --ndk-dir=<path> option.
+
+If you want use clang to rebuild the binaries, please
+use --llvm-version=<ver> option.
 
 The output will be placed in appropriate sub-directories of
 <ndk>/$STLPORT_SUBDIR, but you can override this with the --out-dir=<path>
 option.
 "
 
-RELEASE=`date +%Y%m%d`
-PACKAGE_DIR=/tmp/ndk-prebuilt/prebuilt-$RELEASE
+PACKAGE_DIR=
 register_var_option "--package-dir=<path>" PACKAGE_DIR "Put prebuilt tarballs into <path>."
 
 NDK_DIR=
-register_var_option "--ndk-dir=<path>" NDK_DIR "Don't package, put the files in target NDK dir."
-
-TOOLCHAIN_PKG=
-register_var_option "--toolchain-pkg=<path>" TOOLCHAIN_PKG "Use specific toolchain prebuilt package."
+register_var_option "--ndk-dir=<path>" NDK_DIR "Specify NDK root path for the build."
 
 BUILD_DIR=
 OPTION_BUILD_DIR=
@@ -59,128 +57,191 @@ register_var_option "--build-dir=<path>" OPTION_BUILD_DIR "Specify temporary bui
 OUT_DIR=
 register_var_option "--out-dir=<path>" OUT_DIR "Specify output directory directly."
 
-ABIS="$STLPORT_ABIS"
+ABIS="$PREBUILT_ABIS"
 register_var_option "--abis=<list>" ABIS "Specify list of target ABIs."
+
+NO_MAKEFILE=
+register_var_option "--no-makefile" NO_MAKEFILE "Do not use makefile to speed-up build"
+
+VISIBLE_LIBSTLPORT_STATIC=
+register_var_option "--visible-libstlport-static" VISIBLE_LIBSTLPORT_STATIC "Do not use hidden visibility for libstlport_static.a"
+
+LLVM_VERSION=
+register_var_option "--llvm-version=<ver>" LLVM_VERSION "Specify LLVM version"
+
+register_jobs_option
 
 extract_parameters "$@"
 
-if [ -n "$PACKAGE_DIR" -a -n "$NDK_DIR" ] ; then
-    echo "ERROR: You cannot use both --package-dir and --ndk-dir at the same time!"
-    exit 1
-fi
+ABIS=$(commas_to_spaces $ABIS)
 
-if [ -n "$TOOLCHAIN_PKG" ] ; then
-    if [ ! -f "$TOOLCHAIN_PKG" ] ; then
-        dump "ERROR: Your toolchain package does not exist: $TOOLCHAIN_PKG"
-        exit 1
-    fi
-    case "$TOOLCHAIN_PKG" in
-        *.tar.bz2)
-            ;;
-        *)
-            dump "ERROR: Toolchain package is not .tar.bz2 archive: $TOOLCHAIN_PKG"
-            exit 1
-    esac
-fi
-
+# Handle NDK_DIR
 if [ -z "$NDK_DIR" ] ; then
-    mkdir -p "$PACKAGE_DIR"
-    if [ $? != 0 ] ; then
-        echo "ERROR: Could not create directory: $PACKAGE_DIR"
-        exit 1
-    fi
-    NDK_DIR=/tmp/ndk-toolchain/ndk-prebuilt-$$
-    mkdir -p $NDK_DIR &&
-    dump "Copying NDK files to temporary dir: $NDK_DIR"
-    run cp -rf $ANDROID_NDK_ROOT/* $NDK_DIR/
-    if [ -n "$TOOLCHAIN_PKG" ] ; then
-        dump "Extracting prebuilt toolchain binaries."
-        unpack_archive "$TOOLCHAIN_PKG" "$NDK_DIR"
-    fi
+    NDK_DIR=$ANDROID_NDK_ROOT
+    log "Auto-config: --ndk-dir=$NDK_DIR"
 else
     if [ ! -d "$NDK_DIR" ] ; then
         echo "ERROR: NDK directory does not exists: $NDK_DIR"
         exit 1
     fi
-    PACKAGE_DIR=
 fi
 
-#
-# Setup our paths
-#
-log "Using NDK root: $NDK_DIR"
-
-BUILD_DIR="$OPTION_BUILD_DIR"
-if [ -n "$BUILD_DIR" ] ; then
-    log "Using temporary build dir: $BUILD_DIR"
+if [ -z "$OPTION_BUILD_DIR" ]; then
+    BUILD_DIR=$NDK_TMPDIR/build-stlport
 else
-    BUILD_DIR=`random_temp_directory`
-    log "Using random build dir: $BUILD_DIR"
+    BUILD_DIR=$OPTION_BUILD_DIR
 fi
 mkdir -p "$BUILD_DIR"
+fail_panic "Could not create build directory: $BUILD_DIR"
 
-if [ -z "$OUT_DIR" ] ; then
-    OUT_DIR=$NDK_DIR/$STLPORT_SUBDIR
-    log "Using default output dir: $OUT_DIR"
+GABIXX_SRCDIR=$ANDROID_NDK_ROOT/$GABIXX_SUBDIR
+GABIXX_CFLAGS="-fPIC -O2 -DANDROID -D__ANDROID__ -I$GABIXX_SRCDIR/include -ffunction-sections"
+GABIXX_CXXFLAGS="-fexceptions -frtti"
+GABIXX_SOURCES=$(cd $ANDROID_NDK_ROOT/$GABIXX_SUBDIR && ls src/*.cc)
+GABIXX_LDFLAGS="-ldl"
+
+# Location of the STLPort source tree
+STLPORT_SRCDIR=$ANDROID_NDK_ROOT/$STLPORT_SUBDIR
+STLPORT_CFLAGS="-DGNU_SOURCE -fPIC -O2 -I$STLPORT_SRCDIR/stlport -DANDROID -D__ANDROID__ -ffunction-sections"
+STLPORT_CFLAGS=$STLPORT_CFLAGS" -I$ANDROID_NDK_ROOT/$GABIXX_SUBDIR/include"
+STLPORT_CXXFLAGS="-fuse-cxa-atexit -fexceptions -frtti"
+STLPORT_SOURCES=\
+"src/dll_main.cpp \
+src/fstream.cpp \
+src/strstream.cpp \
+src/sstream.cpp \
+src/ios.cpp \
+src/stdio_streambuf.cpp \
+src/istream.cpp \
+src/ostream.cpp \
+src/iostream.cpp \
+src/codecvt.cpp \
+src/collate.cpp \
+src/ctype.cpp \
+src/monetary.cpp \
+src/num_get.cpp \
+src/num_put.cpp \
+src/num_get_float.cpp \
+src/num_put_float.cpp \
+src/numpunct.cpp \
+src/time_facets.cpp \
+src/messages.cpp \
+src/locale.cpp \
+src/locale_impl.cpp \
+src/locale_catalog.cpp \
+src/facets_byname.cpp \
+src/complex.cpp \
+src/complex_io.cpp \
+src/complex_trig.cpp \
+src/string.cpp \
+src/bitset.cpp \
+src/allocators.cpp \
+src/c_locale.c \
+src/cxa.c"
+
+# If the --no-makefile flag is not used, we're going to put all build
+# commands in a temporary Makefile that we will be able to invoke with
+# -j$NUM_JOBS to build stuff in parallel.
+#
+if [ -z "$NO_MAKEFILE" ]; then
+    MAKEFILE=$BUILD_DIR/Makefile
 else
-    log "Using usr output dir: $OUT_DIR"
+    MAKEFILE=
 fi
 
-#
-# Now build the fake project
-#
-# NOTE: We take the build project from this NDK's tree, not from
-#        the alternative one specified with --ndk=<dir>
-#
-PROJECT_DIR="$ANDROID_NDK_ROOT/$PROJECT_SUBDIR"
-if [ ! -d $PROJECT_DIR ] ; then
-    dump "ERROR: Missing required project: $PROJECT_SUBDIR"
-    exit 1
-fi
+# build_stlport_libs_for_abi
+# $1: ABI
+# $2: build directory
+# $3: build type: "static" or "shared"
+# $4: (optional) installation directory
+build_stlport_libs_for_abi ()
+{
+    local ARCH BINPREFIX SYSROOT
+    local ABI=$1
+    local BUILDDIR="$2"
+    local TYPE="$3"
+    local DSTDIR="$4"
+    local DEFAULT_CFLAGS DEFAULT_CXXLAGS
+    local SRC OBJ OBJECTS CFLAGS CXXFLAGS
+    local UNKNOWN_ARCH=$(find_ndk_unknown_archs | grep $ABI)
 
-# cleanup required to avoid problems with stale dependency files
-rm -rf "$PROJECT_DIR/libs"
-rm -rf "$PROJECT_DIR/obj"
+    # Don't build gabi++ for unknown archs
+    if [ ! -z "$UNKNOWN_ARCH" ]; then
+        GABIXX_SOURCES=
+    fi
 
-LIBRARIES="libstlport_static.a libstlport_shared.so"
+    mkdir -p "$BUILDDIR"
+
+    # If the output directory is not specified, use default location
+    if [ -z "$DSTDIR" ]; then
+        DSTDIR=$NDK_DIR/$STLPORT_SUBDIR/libs/$ABI
+    fi
+
+    mkdir -p "$DSTDIR"
+
+    builder_begin_android $ABI "$BUILDDIR" "$LLVM_VERSION" "$MAKEFILE"
+
+    builder_set_dstdir "$DSTDIR"
+
+    builder_set_srcdir "$GABIXX_SRCDIR"
+    builder_reset_cflags DEFAULT_CFLAGS
+
+    builder_cflags "$DEFAULT_CFLAGS $GABIXX_CFLAGS"
+    builder_reset_cxxflags DEFAULT_CXXLAGS
+    if [ "$TYPE" = "static" -a -z "$VISIBLE_LIBSTLPORT_STATIC" ]; then
+        builder_cxxflags "$DEFAULT_CXXLAGS $GABIXX_CXXFLAGS -fvisibility=hidden -fvisibility-inlines-hidden"
+    else
+        builder_cxxflags "$DEFAULT_CXXLAGS $GABIXX_CXXFLAGS"
+    fi
+    builder_ldflags "$GABIXX_LDFLAGS"
+    builder_sources $GABIXX_SOURCES
+
+    builder_set_srcdir "$STLPORT_SRCDIR"
+    builder_reset_cflags
+    builder_cflags "$DEFAULT_CFLAGS $STLPORT_CFLAGS"
+    builder_reset_cxxflags
+    if [ "$TYPE" = "static" -a -z "$VISIBLE_LIBSTLPORT_STATIC" ]; then
+        builder_cxxflags "$DEFAULT_CXXLAGS $STLPORT_CXXFLAGS -fvisibility=hidden -fvisibility-inlines-hidden"
+    else
+        builder_cxxflags "$DEFAULT_CXXLAGS $STLPORT_CXXFLAGS"
+    fi
+    builder_sources $STLPORT_SOURCES
+
+    if [ "$TYPE" = "static" ]; then
+        log "Building $DSTDIR/libstlport_static.a"
+        builder_static_library libstlport_static
+    else
+        log "Building $DSTDIR/libstlport_shared.so"
+        builder_shared_library libstlport_shared
+    fi
+    builder_end
+}
 
 for ABI in $ABIS; do
-    dump "Building $ABI STLport binaries..."
-    (run cd "$PROJECT_SUBDIR" && run "$NDK_DIR"/ndk-build -B APP_ABI=$ABI -j$BUILD_JOBS STLPORT_FORCE_REBUILD=true)
-    if [ $? != 0 ] ; then
-        dump "ERROR: Could not build $ABI STLport binaries!!"
-        exit 1
-    fi
-
-    if [ -z "$PACKAGE_DIR" ] ; then
-       # Copy files to target NDK
-        SRCDIR="$PROJECT_SUBDIR/obj/local/$ABI"
-        DSTDIR="$OUT_DIR/libs/$ABI"
-        copy_file_list "$SRCDIR" "$DSTDIR" "$LIBRARIES"
-    fi
+    build_stlport_libs_for_abi $ABI "$BUILD_DIR/$ABI/shared" "shared"
+    build_stlport_libs_for_abi $ABI "$BUILD_DIR/$ABI/static" "static"
 done
 
 # If needed, package files into tarballs
 if [ -n "$PACKAGE_DIR" ] ; then
     for ABI in $ABIS; do
         FILES=""
-        for LIB in $LIBRARIES; do
-            SRCDIR="$PROJECT_SUBDIR/obj/local/$ABI"
-            DSTDIR="$STLPORT_SUBDIR/libs/$ABI"
-            copy_file_list "$SRCDIR" "$NDK_DIR/$DSTDIR" "$LIB"
-            log "Installing: $DSTDIR/$LIB"
-            FILES="$FILES $DSTDIR/$LIB"
+        for LIB in libstlport_static.a libstlport_shared.so; do
+            FILES="$FILES $STLPORT_SUBDIR/libs/$ABI/$LIB"
         done
         PACKAGE="$PACKAGE_DIR/stlport-libs-$ABI.tar.bz2"
+        log "Packaging: $PACKAGE"
         pack_archive "$PACKAGE" "$NDK_DIR" "$FILES"
         fail_panic "Could not package $ABI STLport binaries!"
         dump "Packaging: $PACKAGE"
     done
 fi
 
-if [ -n "$PACKAGE_DIR" ] ; then
-    dump "Cleaning up..."
-    rm -rf $NDK_DIR
+if [ -z "$OPTION_BUILD_DIR" ]; then
+    log "Cleaning up..."
+    rm -rf $BUILD_DIR
+else
+    log "Don't forget to cleanup: $BUILD_DIR"
 fi
 
-dump "Done!"
+log "Done!"

@@ -24,7 +24,7 @@ $(call assert-defined, _config_mk)
 # The list of variables that must or may be defined
 # by the toolchain configuration file
 #
-NDK_TOOLCHAIN_VARS_REQUIRED := TOOLCHAIN_ABIS
+NDK_TOOLCHAIN_VARS_REQUIRED := TOOLCHAIN_ABIS TOOLCHAIN_ARCH
 NDK_TOOLCHAIN_VARS_OPTIONAL :=
 
 # Clear variables that are supposed to be defined by the config file
@@ -33,6 +33,18 @@ $(call clear-vars,$(NDK_TOOLCHAIN_VARS_OPTIONAL))
 
 # Include the config file
 include $(_config_mk)
+
+# Plug in the undefined
+ifeq ($(TOOLCHAIN_ABIS)$(TOOLCHAIN_ARCH),)
+ifeq (1,$(words $(filter-out $(NDK_KNOWN_ARCHS),$(NDK_FOUND_ARCHS))))
+TOOLCHAIN_ARCH := $(filter-out $(NDK_KNOWN_ARCHS),$(NDK_FOUND_ARCHS))
+TOOLCHAIN_ABIS := $(TOOLCHAIN_ARCH) $(NDK_KNOWN_ABIS:%=$(TOOLCHAIN_ARCH)%) $(NDK_KNOWN_ABIS:%=$(TOOLCHAIN_ARCH)bc%)
+endif
+endif
+
+ifeq ($(TOOLCHAIN_ABIS)$(TOOLCHAIN_ARCH),)
+# Ignore if both TOOLCHAIN_ABIS and TOOLCHAIN_ARCH are not defined
+else
 
 # Check that the proper variables were defined
 $(call check-required-vars,$(NDK_TOOLCHAIN_VARS_REQUIRED),$(_config_mk))
@@ -43,6 +55,7 @@ $(call assert-defined, _config_mk)
 # Now record the toolchain-specific information
 _dir  := $(patsubst %/,%,$(dir $(_config_mk)))
 _name := $(notdir $(_dir))
+_arch := $(TOOLCHAIN_ARCH)
 _abis := $(TOOLCHAIN_ABIS)
 
 _toolchain := NDK_TOOLCHAIN.$(_name)
@@ -53,6 +66,7 @@ $(if $(strip $($(_toolchain).defined)),\
                      already defined in $(NDK_TOOLCHAIN.$(_name).defined)))
 
 $(_toolchain).defined := $(_toolchain_config)
+$(_toolchain).arch    := $(_arch)
 $(_toolchain).abis    := $(_abis)
 $(_toolchain).setup   := $(wildcard $(_dir)/setup.mk)
 
@@ -60,13 +74,20 @@ $(if $(strip $($(_toolchain).setup)),,\
   $(call __ndk_error, Toolchain $(_name) lacks a setup.mk in $(_dir)))
 
 NDK_ALL_TOOLCHAINS += $(_name)
+NDK_ALL_ARCHS      += $(_arch)
 NDK_ALL_ABIS       += $(_abis)
 
-# NKD_ABI.<abi>.toolchains records the list of toolchains that support
+# NDK_ABI.<abi>.toolchains records the list of toolchains that support
 # a given ABI
 #
 $(foreach _abi,$(_abis),\
     $(eval NDK_ABI.$(_abi).toolchains += $(_name)) \
+    $(eval NDK_ABI.$(_abi).arch := $(sort $(NDK_ABI.$(_abi).arch) $(_arch)))\
 )
+
+NDK_ARCH.$(_arch).toolchains += $(_name)
+NDK_ARCH.$(_arch).abis := $(sort $(NDK_ARCH.$(_arch).abis) $(_abis))
+
+endif
 
 # done

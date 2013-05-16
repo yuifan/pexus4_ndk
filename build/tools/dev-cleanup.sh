@@ -36,11 +36,18 @@ fi
 rm -rf $DIR/platforms
 rm -rf $DIR/toolchains/*/prebuilt
 rm -rf $DIR/samples
+rm -rf $DIR/prebuilt
 
 # Remove prebuilt binaries
 rm -rf $DIR/$STLPORT_SUBDIR/libs
-rm -rf $DIR/$GNUSTL_SUBDIR/include
-rm -rf $DIR/$GNUSTL_SUBDIR/libs/*
+rm -rf $DIR/$GABIXX_SUBDIR/libs
+for VERSION in $DEFAULT_GCC_VERSION_LIST; do
+    rm -rf $DIR/$GNUSTL_SUBDIR/$VERSION
+done
+rm -rf $DIR/$LIBPORTABLE_SUBDIR
+
+rm -f $DIR/ndk-stack*
+rm -f $DIR/ndk-depends*
 
 clean_dir ()
 {
@@ -60,7 +67,7 @@ clean_file ()
 
 cleanup_project ()
 {
-    clean_dir $1/obj
+    clean_dir  $1/obj
     clean_dir  $1/libs
     clean_dir  $1/bin
     clean_dir  $1/gen

@@ -28,7 +28,7 @@ PROGRAM_DESCRIPTION=\
 
 Where <src-dir> is the location of the gdbserver sources,
 <ndk-dir> is the top-level NDK installation path and <toolchain>
-is the name of the toolchain to use (e.g. arm-eabi-4.4.0).
+is the name of the toolchain to use (e.g. arm-linux-androideabi-4.4.3).
 
 The final binary is placed under:
 
@@ -39,11 +39,11 @@ NOTE: The --platform option is ignored if --sysroot is used."
 VERBOSE=no
 
 OPTION_BUILD_OUT=
-BUILD_OUT=`random_temp_directory`
-register_option "--build-out=<path>" do_build_out "Set temporary build directory" "/tmp/<random>"
+BUILD_OUT=/tmp/ndk-$USER/build/gdbserver
+register_option "--build-out=<path>" do_build_out "Set temporary build directory"
 do_build_out () { OPTION_BUILD_OUT="$1"; }
 
-PLATFORM=android-3
+PLATFORM=$DEFAULT_PLATFORM
 register_var_option "--platform=<name>"  PLATFORM "Target specific platform"
 
 SYSROOT=
@@ -55,11 +55,13 @@ register_var_option "--sysroot=<path>" SYSROOT "Specify sysroot directory direct
 NOTHREADS=no
 register_var_option "--disable-threads" NOTHREADS "Disable threads support"
 
-JOBS=$HOST_NUM_CPUS
-register_var_option "-j<number>" JOBS "Use <number> build jobs in parallel"
-
-GDB_VERSION=6.6
+GDB_VERSION=$DEFAULT_GDB_VERSION
 register_var_option "--gdb-version=<name>" GDB_VERSION "Use specific gdb version."
+
+PACKAGE_DIR=
+register_var_option "--package-dir=<path>" PACKAGE_DIR "Archive binary into specific directory"
+
+register_jobs_option
 
 extract_parameters "$@"
 
@@ -115,10 +117,15 @@ set_parameters ()
 
 set_parameters $PARAMETERS
 
-prepare_host_flags
+if [ "$PACKAGE_DIR" ]; then
+    mkdir -p "$PACKAGE_DIR"
+    fail_panic "Could not create package directory: $PACKAGE_DIR"
+fi
 
-parse_toolchain_name
-check_toolchain_install $NDK_DIR
+prepare_target_build
+
+parse_toolchain_name $TOOLCHAIN
+check_toolchain_install $NDK_DIR $TOOLCHAIN
 
 # Check build directory
 #
@@ -134,7 +141,7 @@ run mkdir -p "$BUILD_OUT"
 # Copy the sysroot to a temporary build directory
 BUILD_SYSROOT="$BUILD_OUT/sysroot"
 run mkdir -p "$BUILD_SYSROOT"
-run cp -rp "$SYSROOT/*" "$BUILD_SYSROOT"
+run cp -RHL "$SYSROOT"/* "$BUILD_SYSROOT"
 
 # Remove libthread_db to ensure we use exactly the one we want.
 rm -f $BUILD_SYSROOT/usr/lib/libthread_db*
@@ -152,7 +159,8 @@ if [ "$NOTHREADS" != "yes" ] ; then
     # Small trick, to avoid calling ar, we store the single object file
     # with an .a suffix. The linker will handle that seamlessly.
     run cp $LIBTHREAD_DB_DIR/thread_db.h $BUILD_SYSROOT/usr/include/
-    run $TOOLCHAIN_PREFIX-gcc --sysroot=$BUILD_SYSROOT -o $BUILD_SYSROOT/usr/lib/libthread_db.a -c $LIBTHREAD_DB_DIR/libthread_db.c
+    run $TOOLCHAIN_PREFIX-gcc --sysroot=$BUILD_SYSROOT -o $BUILD_SYSROOT/usr/lib/libthread_db.o -c $LIBTHREAD_DB_DIR/libthread_db.c
+    run $TOOLCHAIN_PREFIX-ar -r $BUILD_SYSROOT/usr/lib/libthread_db.a $BUILD_SYSROOT/usr/lib/libthread_db.o
     if [ $? != 0 ] ; then
         dump "ERROR: Could not compile libthread_db.c!"
         exit 1
@@ -184,12 +192,15 @@ case "$GDB_VERSION" in
     6.6)
         CONFIGURE_FLAGS="--with-sysroot=$BUILD_SYSROOT"
         ;;
-    7.1.x)
+    7.3.x)
         # This flag is required to link libthread_db statically to our
         # gdbserver binary. Otherwise, the program will try to dlopen()
         # the threads binary, which is not possible since we build a
         # static executable.
         CONFIGURE_FLAGS="--with-libthread-db=$BUILD_SYSROOT/usr/lib/libthread_db.a"
+        # Disable libinproctrace.so which needs crtbegin_so.o and crtbend_so.o instead of
+        # CRTBEGIN/END above.  Clean it up and re-enable it in the future.
+        CONFIGURE_FLAGS=$CONFIGURE_FLAGS" --disable-inprocess-agent"
         ;;
     *)
         CONFIGURE_FLAGS=""
@@ -197,8 +208,8 @@ esac
 
 cd $BUILD_OUT &&
 export CC="$TOOLCHAIN_PREFIX-gcc --sysroot=$BUILD_SYSROOT" &&
-export CFLAGS="-O2 -nostdinc -nostdlib -D__ANDROID__ -DANDROID -DSTDC_HEADERS $INCLUDE_DIRS $GDBSERVER_CFLAGS"  &&
-export LDFLAGS="-static -Wl,-z,nocopyreloc -Wl,--no-undefined $LIBRARY_LDFLAGS" &&
+export CFLAGS="-O2 -nostdlib -D__ANDROID__ -DANDROID -DSTDC_HEADERS $INCLUDE_DIRS $GDBSERVER_CFLAGS"  &&
+export LDFLAGS="-static -Wl,-z,nocopyreloc -Wl,--no-undefined $LIBRARY_LDFLAGS $GDBSERVER_LDFLAGS" &&
 run $SRC_DIR/configure \
 --host=$GDBSERVER_HOST \
 $CONFIGURE_FLAGS
@@ -213,7 +224,7 @@ LDFLAGS="$OLD_LDFLAGS"
 # build gdbserver
 dump "Building : $TOOLCHAIN gdbserver."
 cd $BUILD_OUT &&
-run make -j$JOBS
+run make -j$NUM_JOBS
 if [ $? != 0 ] ; then
     dump "Could not build $TOOLCHAIN gdbserver. Use --verbose to see why."
     exit 1
@@ -230,12 +241,18 @@ else
     DSTFILE="gdbserver"
 fi
 dump "Install  : $TOOLCHAIN $DSTFILE."
-DEST=`dirname $TOOLCHAIN_PATH`
+DEST=$ANDROID_NDK_ROOT/prebuilt/android-$ARCH/gdbserver
 mkdir -p $DEST &&
 run $TOOLCHAIN_PREFIX-objcopy --strip-unneeded $BUILD_OUT/gdbserver $DEST/$DSTFILE
 if [ $? != 0 ] ; then
     dump "Could not install $DSTFILE. See $TMPLOG"
     exit 1
+fi
+
+if [ "$PACKAGE_DIR" ]; then
+    ARCHIVE=$ARCH-gdbserver.tar.bz2
+    dump "Packaging: $ARCHIVE"
+    pack_archive "$PACKAGE_DIR/$ARCHIVE" "$ANDROID_NDK_ROOT" "prebuilt/android-$ARCH/gdbserver/$DSTFILE"
 fi
 
 log "Cleaning up."

@@ -22,12 +22,13 @@
 #
 NDK_ROOT := $(dir $(lastword $(MAKEFILE_LIST)))
 NDK_ROOT := $(strip $(NDK_ROOT:%build/core/=%))
+NDK_ROOT := $(subst \,/,$(NDK_ROOT))
 NDK_ROOT := $(NDK_ROOT:%/=%)
 ifeq ($(NDK_ROOT),)
     # for the case when we're invoked from the NDK install path
     NDK_ROOT := .
 endif
-ifdef NDK_LOG
+ifeq ($(NDK_LOG),1)
     $(info Android NDK: NDK installation path auto-detected: '$(NDK_ROOT)')
 endif
 ifneq ($(words $(NDK_ROOT)),1)
@@ -44,12 +45,37 @@ include $(NDK_ROOT)/build/core/init.mk
 # path by looking at the manifest file in the current directory or
 # any of its parents. If none is found, try again with 'jni/Android.mk'
 #
+# Note that we first look at the current directory to avoid using
+# absolute NDK_PROJECT_PATH values. This reduces the length of all
+# source, object and binary paths that are passed to build commands.
+#
 # It turns out that some people use ndk-build to generate static
 # libraries without a full Android project tree.
 #
 # ====================================================================
 
-find-project-dir = $(strip $(call find-project-dir-inner,$1,$2))
+ifeq ($(HOST_OS),windows)
+# On Windows, defining host-dir-parent is a bit more tricky because the
+# GNU Make $(dir ...) function doesn't return an empty string when it
+# reaches the top of the directory tree, and we want to enforce this to
+# avoid infinite loops.
+#
+#   $(dir C:)     -> C:       (empty expected)
+#   $(dir C:/)    -> C:/      (empty expected)
+#   $(dir C:\)    -> C:\      (empty expected)
+#   $(dir C:/foo) -> C:/      (correct)
+#   $(dir C:\foo) -> C:\      (correct)
+#
+host-dir-parent = $(strip \
+    $(eval __host_dir_node := $(patsubst %/,%,$(subst \,/,$1)))\
+    $(eval __host_dir_parent := $(dir $(__host_dir_node)))\
+    $(filter-out $1,$(__host_dir_parent))\
+    )
+else
+host-dir-parent = $(patsubst %/,%,$(dir $1))
+endif
+
+find-project-dir = $(strip $(call find-project-dir-inner,$(abspath $1),$2))
 
 find-project-dir-inner = \
     $(eval __found_project_path := )\
@@ -65,7 +91,7 @@ find-project-dir-inner-2 = \
         $(call ndk_log,    Found it !)\
         $(eval __found_project_path := $(__find_project_path))\
         ,\
-        $(eval __find_project_parent := $(patsubst %/,%,$(dir $(__find_project_path))))\
+        $(eval __find_project_parent := $(call host-dir-parent,$(__find_project_path)))\
         $(if $(__find_project_parent),\
             $(eval __find_project_path := $(__find_project_parent))\
             $(call find-project-dir-inner-2)\
@@ -73,11 +99,30 @@ find-project-dir-inner-2 = \
     )
 
 NDK_PROJECT_PATH := $(strip $(NDK_PROJECT_PATH))
+
+# To keep paths as short as possible during the build, we first look if the
+# current directory is the top of our project path. If this is the case, we
+# will define NDK_PROJECT_PATH to simply '.'
+#
+# Otherwise, we will use find-project-dir which will first get the absolute
+# path of the current directory the climb back the hierarchy until we find
+# something. The result will always be a much longer definition for
+# NDK_PROJECT_PATH
+#
 ifndef NDK_PROJECT_PATH
-    NDK_PROJECT_PATH := $(call find-project-dir,$(strip $(shell pwd)),AndroidManifest.xml)
+    ifneq (,$(strip $(wildcard AndroidManifest.xml)))
+        NDK_PROJECT_PATH := .
+    else
+        ifneq (,$(strip $(wildcard jni/Android.mk)))
+            NDK_PROJECT_PATH := .
+        endif
+    endif
 endif
 ifndef NDK_PROJECT_PATH
-    NDK_PROJECT_PATH := $(call find-project-dir,$(strip $(shell pwd)),jni/Android.mk)
+    NDK_PROJECT_PATH := $(call find-project-dir,.,jni/Android.mk)
+endif
+ifndef NDK_PROJECT_PATH
+    NDK_PROJECT_PATH := $(call find-project-dir,.,AndroidManifest.xml)
 endif
 ifndef NDK_PROJECT_PATH
     $(call __ndk_info,Could not find application project directory !)
@@ -100,7 +145,11 @@ endif
 $(call ndk_log,Found project path: $(NDK_PROJECT_PATH))
 
 # Place all generated files here
-NDK_APP_OUT := $(NDK_PROJECT_PATH)/obj
+NDK_APP_OUT := $(strip $(NDK_OUT))
+ifndef NDK_APP_OUT
+  NDK_APP_OUT := $(NDK_PROJECT_PATH)/obj
+endif
+$(call ndk_log,Ouput path: $(NDK_APP_OUT))
 
 # Fake an application named 'local'
 _app            := local
@@ -108,6 +157,13 @@ _application_mk := $(NDK_APPLICATION_MK)
 NDK_APPS        := $(_app)
 
 include $(BUILD_SYSTEM)/add-application.mk
+
+# For cygwin, put generated dependency conversion script here
+# Do not define this variable for other host platforms
+#
+ifeq ($(HOST_OS),cygwin)
+NDK_DEPENDENCIES_CONVERTER := $(NDK_APP_OUT)/convert-dependencies.sh
+endif
 
 # If a goal is DUMP_xxx then we dump a variable xxx instead
 # of building anything

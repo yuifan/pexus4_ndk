@@ -57,7 +57,7 @@ parse_parameters ()
 extract_parameters "$@"
 parse_parameters $PARAMETERS
 
-PATCHES=`(cd $PATCHES_DIR && find . -name "*.patch") 2> /dev/null`
+PATCHES=`(cd $PATCHES_DIR && find . -name "*.patch" | sort ) 2> /dev/null`
 if [ -z "$PATCHES" ] ; then
     log "No patches files in $PATCHES_DIR"
     exit 0
@@ -68,7 +68,7 @@ for PATCH in $PATCHES; do
     PATCHNAME=`basename $PATCH`
     log "Applying $PATCHNAME into $SRC_DIR/$PATCHDIR"
     cd $SRC_DIR/$PATCHDIR && patch -p1 < $PATCHES_DIR/$PATCH
-    fail_panic "Patch failure!! Please check your patches directory!"
+    fail_panic "Patch failure with $PATCHES_DIR/$PATCH!! !! Please check your patches directory!"
 done
 
 dump "Done!"

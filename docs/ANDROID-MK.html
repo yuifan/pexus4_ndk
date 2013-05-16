@@ -54,7 +54,7 @@ Simple example:
 Before describing the syntax in details, let's consider the simple
 "hello JNI" example, i.e. the files under:
 
-    apps/hello-jni/project
+    samples/hello-jni
 
 Here, we can see:
 
@@ -195,7 +195,7 @@ BUILD_STATIC_LIBRARY
     A variant of BUILD_SHARED_LIBRARY that is used to build a target static
     library instead. Static libraries are not copied into your
     project/packages but can be used to build shared libraries (see
-    LOCAL_STATIC_LIBRARIES and LOCAL_STATIC_WHOLE_LIBRARIES described below).
+    LOCAL_STATIC_LIBRARIES and LOCAL_WHOLE_STATIC_LIBRARIES described below).
     Example usage:
 
       include $(BUILD_STATIC_LIBRARY)
@@ -229,12 +229,19 @@ TARGET_PLATFORM
 
 TARGET_ARCH_ABI
     Name of the target CPU+ABI when this Android.mk is parsed.
-    Two values are supported at the moment:
+    Four values are supported at the moment:
 
        armeabi
-            For Armv5TE
+            For ARMv5TE
 
        armeabi-v7a
+            For ARMv7
+
+       x86
+            For i686
+
+       mips
+            For mips-r1
 
     NOTE: Up to Android NDK 1.6_r1, this variable was simply defined
           as 'arm'. However, the value has been redefined to better
@@ -249,7 +256,7 @@ TARGET_ARCH_ABI
     'TARGET_ARCH_ABI'
 
 TARGET_ABI
-    The concatenation of target platform and abi, it really is defined
+    The concatenation of target platform and ABI, it really is defined
     as $(TARGET_PLATFORM)-$(TARGET_ARCH_ABI) and is useful when you want
     to test against a specific target system image for a real device.
 
@@ -417,21 +424,59 @@ LOCAL_SRC_FILES
     Only list the files that will be passed to a compiler, since the
     build system automatically computes dependencies for you.
 
-    Note that source files names are all relative to LOCAL_PATH and
+    Note that source files names are relative to LOCAL_PATH and
     you can use path components, e.g.:
 
       LOCAL_SRC_FILES := foo.c \
                          toto/bar.c
+
+    Absolute file paths are also supported:
+
+      LOCAL_SRC_FILES := /home/user/mysources/foo.c
+
+    or on Windows:
+
+      LOCAL_SRC_FILES := c:/Users/user/sources/foo.c
+
+    Avoiding absolute file paths is recommended, this this makes your
+    Android.mk easy to reuse on a different machine / system.
 
     NOTE: Always use Unix-style forward slashes (/) in build files.
           Windows-style back-slashes will not be handled properly.
 
 LOCAL_CPP_EXTENSION
     This is an optional variable that can be defined to indicate
-    the file extension of C++ source files. The default is '.cpp'
-    but you can change it. For example:
+    the file extension(s) of C++ source files. They must begin with a dot.
+    The default is '.cpp' but you can change it. For example:
 
         LOCAL_CPP_EXTENSION := .cxx
+
+    Since NDK r7, you can list several extensions in this variable, as in:
+
+        LOCAL_CPP_EXTENSION := .cxx .cpp .cc
+
+LOCAL_CPP_FEATURES
+    This is an optional variable that can be defined to indicate
+    that your code relies on specific C++ features. To indicate that
+    your code uses RTTI (RunTime Type Information), use the following:
+
+        LOCAL_CPP_FEATURES := rtti
+
+    To indicate that your code uses C++ exceptions, use:
+
+        LOCAL_CPP_FEATURES := exceptions
+
+    You can also use both of them with (order is not important):
+
+        LOCAL_CPP_FEATURES := rtti features
+
+    The effect of this variable is to enable the right compiler/linker
+    flags when building your modules from sources. For prebuilt binaries,
+    this also helps declare which features the binary relies on to ensure
+    the final link works correctly.
+
+    It is recommended to use this variable instead of enabling -frtti and
+    -fexceptions directly in your LOCAL_CPPFLAGS definition.
 
 LOCAL_C_INCLUDES
     An optional list of paths, relative to the NDK *root* directory,
@@ -499,16 +544,41 @@ LOCAL_SHARED_LIBRARIES
     This is necessary at link time and to embed the corresponding information
     in the generated file.
 
+LOCAL_WHOLE_STATIC_LIBRARIES
+    A variant of LOCAL_STATIC_LIBRARIES used to express that the corresponding
+    library module should be used as "whole archives" to the linker. See the
+    GNU linker's documentation for the --whole-archive flag.
+
+    This is generally useful when there are circular dependencies between
+    several static libraries. Note that when used to build a shared library,
+    this will force all object files from your whole static libraries to be
+    added to the final binary. This is not true when generating executables
+    though.
+
 LOCAL_LDLIBS
     The list of additional linker flags to be used when building your
-    module. This is useful to pass the name of specific system libraries
-    with the "-l" prefix. For example, the following will tell the linker
-    to generate a module that links to /system/lib/libz.so at load time:
+    shared library or executable. This is useful to pass the name of
+    specific system libraries with the "-l" prefix. For example, the
+    following will tell the linker to generate a module that links to
+    /system/lib/libz.so at load time:
 
       LOCAL_LDLIBS := -lz
 
     See docs/STABLE-APIS.html for the list of exposed system libraries you
     can linked against with this NDK release.
+
+    NOTE: This is ignored for static libraries, and ndk-build will print
+          a warning if you define it in such a module.
+
+LOCAL_LDFLAGS
+    The list of other linker flags to be used when building your shared
+    library or executable. For example, the following will use the ld.bfd
+    linker on ARM/X86 GCC 4.6/4.7 where ld.gold is the default
+
+      LOCAL_LDFLAGS += -fuse-ld=bfd
+
+    NOTE: This is ignored for static libraries, and ndk-build will print
+          a warning if you define it in such a module.
 
 LOCAL_ALLOW_UNDEFINED_SYMBOLS
     By default, any undefined reference encountered when trying to build
@@ -519,6 +589,9 @@ LOCAL_ALLOW_UNDEFINED_SYMBOLS
     variable to 'true'. Note that the corresponding shared library may fail
     to load at runtime.
 
+    NOTE: This is ignored for static libraries, and ndk-build will print
+          a warning if you define it in such a module.
+
 LOCAL_ARM_MODE
     By default, ARM target binaries will be generated in 'thumb' mode, where
     each instruction are 16-bit wide. You can define this variable to 'arm'
@@ -528,12 +601,12 @@ LOCAL_ARM_MODE
       LOCAL_ARM_MODE := arm
 
     Note that you can also instruct the build system to only build specific
-    sources in arm mode by appending an '.arm' suffix to its source file
+    sources in ARM mode by appending an '.arm' suffix to its source file
     name. For example, with:
 
        LOCAL_SRC_FILES := foo.c bar.c.arm
 
-    Tells the build system to always compile 'bar.c' in arm mode, and to
+    Tells the build system to always compile 'bar.c' in ARM mode, and to
     build foo.c according to the value of LOCAL_ARM_MODE.
 
     NOTE: Setting APP_OPTIM to 'debug' in your Application.mk will also force
@@ -545,11 +618,11 @@ LOCAL_ARM_NEON
     (a.k.a. NEON) GCC intrinsics in your C and C++ sources, as well as
     NEON instructions in Assembly files.
 
-    You should only define it when targetting the 'armeabi-v7a' ABI that
+    You should only define it when targeting the 'armeabi-v7a' ABI that
     corresponds to the ARMv7 instruction set. Note that not all ARMv7
     based CPUs support the NEON instruction set extensions and that you
     should perform runtime detection to be able to use this code at runtime
-    safely. To lean more about this, please read the documentation at
+    safely. To learn more about this, please read the documentation at
     docs/CPU-ARM-NEON.html and docs/CPU-FEATURES.html.
 
     Alternatively, you can also specify that only specific source files
@@ -571,7 +644,7 @@ LOCAL_DISABLE_NO_EXECUTE
     need to by setting this variable to 'true'.
 
     NOTE: This feature does not modify the ABI and is only enabled on
-          kernels targetting ARMv6+ CPU devices. Machine code generated
+          kernels targeting ARMv6+ CPU devices. Machine code generated
           with this feature enabled will run unmodified on devices
           running earlier CPU architectures.
 
@@ -579,6 +652,25 @@ LOCAL_DISABLE_NO_EXECUTE
 
         http://en.wikipedia.org/wiki/NX_bit
         http://www.gentoo.org/proj/en/hardened/gnu-stack.xml
+
+LOCAL_DISABLE_RELRO
+    By default, NDK compiled code is built with read-only relocations
+    and GOT protection.  This instructs the runtime linker to mark
+    certain regions of memory as being read-only after relocation,
+    making certain security exploits (such as GOT overwrites) harder
+    to perform.
+
+    It is enabled by default, but you can disable it if you *really*
+    need to by setting this variable to 'true'.
+
+    NOTE: These protections are only effective on newer Android devices
+          ("Jelly Bean" and beyond). The code will still run on older
+          versions (albeit without memory protections).
+
+    For more information, see:
+
+        http://isisblogs.poly.edu/2011/06/01/relro-relocation-read-only/
+        http://www.akkadia.org/drepper/nonselsec.pdf (section 6)
 
 LOCAL_EXPORT_CFLAGS
     Define this variable to record a set of C/C++ compiler flags that will
@@ -647,6 +739,43 @@ LOCAL_EXPORT_LDLIBS
     command to indicate that it depends on the system logging library,
     because it depends on 'foo'.
 
+LOCAL_SHORT_COMMANDS
+    Set this variable to 'true' when your module has a very high number of
+    sources and/or dependent static or shared libraries. This forces the
+    build system to use an intermediate list file, and use it with the
+    library archiver or static linker with the @$(listfile) syntax.
+
+    This can be useful on Windows, where the command-line only accepts
+    a maximum of 8191 characters, which can be too small for complex
+    projects.
+
+    This also impacts the compilation of individual source files, placing
+    nearly all compiler flags inside list files too.
+
+    Note that any other value than 'true' will revert to the default
+    behaviour. You can also define APP_SHORT_COMMANDS in your
+    Application.mk to force this behaviour for all modules in your
+    project.
+
+    NOTE: We do not recommend enabling this feature by default, since it
+          makes the build slower.
+
+LOCAL_THIN_ARCHIVE
+    Set this variable to 'true' when building static libraries. This will
+    generate a 'thin archive', i.e. a library file (e.g. libfoo.a) which
+    doesn't contain object files, but simply file paths to the actual
+    objects that it should normally contain.
+
+    This is useful to reduce the size of your build output. The drawback
+    is that such libraries _cannot_ be moved to a different location
+    (all paths inside them are relative).
+
+    Valid values are 'true', 'false' or empty. A default value can be
+    set in your Application.mk through APP_THIN_ARCHIVE.
+
+    NOTE: This is ignored for non-static library modules, or prebuilt
+    static library ones.
+
 LOCAL_FILTER_ASM
     Define this variable to a shell command that will be used to filter
     the assembly files from, or generated from, your LOCAL_SRC_FILES.
@@ -677,4 +806,5 @@ LOCAL_FILTER_ASM
 
         myasmfilter $OBJS_DIR/foo.S.original $OBJS_DIR/foo.S
         myasmfilter bar.S $OBJS_DIR/bar.S
+
 </pre></body></html>

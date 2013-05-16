@@ -268,7 +268,7 @@ common_header  $TOP/external/zlib zlib.h
 common_header  $TOP/external/zlib zconf.h
 
 # Jni header
-common_header  $TOP/dalvik/libnativehelper/include/nativehelper jni.h
+common_header  $TOP/libnativehelper/include/nativehelper jni.h
 
 # libthread_db headers, not sure if this is needed for the NDK
 common_headers $BIONIC_ROOT/libthread_db/include
@@ -295,7 +295,7 @@ arch_headers   $LIBC_ROOT/arch-$ARCH/include
 # Do we need to package the result
 if [ $OPTION_PACKAGE = yes ] ; then
     DATE=`date +%Y%m%d`
-    PKGFILE=/tmp/android-ndk-sysroot-$DATE.tar.bz2
+    PKGFILE=/tmp/ndk-$USER/android-ndk-sysroot-$DATE.tar.bz2
     tar cjf $PKGFILE build/platforms/$PLATFORM/arch-$ARCH
     echo "Packaged in $PKGFILE"
 fi

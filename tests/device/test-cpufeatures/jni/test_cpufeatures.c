@@ -26,6 +26,9 @@ int main(void)
     case ANDROID_CPU_FAMILY_X86:
         printf("CPU family is x86\n");
         break;
+    case ANDROID_CPU_FAMILY_MIPS:
+        printf("CPU family is MIPS\n");
+        break;
     default:
         fprintf(stderr, "Unsupported CPU family: %d\n", family);
         return 1;
@@ -34,15 +37,48 @@ int main(void)
     if (family == ANDROID_CPU_FAMILY_ARM) {
         uint64_t features = android_getCpuFeatures();
         printf( "Supported ARM features:\n");
-        if ((features & ANDROID_CPU_ARM_FEATURE_ARMv7) != 0) {
-            printf( "  ARMv7\n" );
+#define CHECK(name) \
+        if ((features & ANDROID_CPU_ARM_FEATURE_## name) != 0) { \
+            printf( "  "#name"\n" ); \
         }
-        if ((features & ANDROID_CPU_ARM_FEATURE_VFPv3) != 0) {
-            printf( "  VFPv3\n" );
-        }
-        if ((features & ANDROID_CPU_ARM_FEATURE_NEON) != 0) {
-            printf( "  NEON\n" );
-        }
+        CHECK(LDREX_STREX)
+        CHECK(VFPv2)
+        CHECK(ARMv7)
+        CHECK(VFPv3)
+        CHECK(VFP_D32)
+        CHECK(VFP_FP16)
+        CHECK(VFP_FMA)
+        CHECK(NEON)
+        CHECK(NEON_FMA)
+        CHECK(IDIV_ARM)
+        CHECK(IDIV_THUMB2)
+        CHECK(iWMMXt)
+#undef CHECK
     }
+
+#ifdef __arm__
+    uint32_t cpu_id = android_getCpuIdArm();
+    printf( "ARM CpuID: %08x\n", cpu_id);
+    printf( "   implementer: %02x\n", (cpu_id >> 24) & 0xff);
+    printf( "   variant    : %02x\n", (cpu_id >> 20) & 0x0f);
+    printf( "   part       : %03x\n", (cpu_id >> 4) & 0xfff);
+    printf( "   revision   : %x\n",    cpu_id & 0x0f);
+#endif
+
+    if (family == ANDROID_CPU_FAMILY_X86) {
+        uint64_t features = android_getCpuFeatures();
+        printf( "Supported x86 features:\n");
+#define CHECK(name) \
+        if ((features & ANDROID_CPU_X86_FEATURE_## name) != 0) { \
+            printf( "  "#name"\n" ); \
+        }
+        CHECK(SSSE3)
+        CHECK(POPCNT)
+        CHECK(MOVBE)
+#undef CHECK
+    }
+
+    int count = android_getCpuCount();
+    printf( "Number of CPU cores: %d\n", count);
     return 0;
 }
